@@ -1,14 +1,12 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-import torch
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 from torch.nn import functional as F
 
-from detectron2.structures import Instances, ROIMasks
+from detectron2.layers import paste_masks_in_image
+from detectron2.structures import Instances
+from detectron2.utils.memory import retry_if_cuda_oom
 
 
-# perhaps should rename to "resize_instance"
-def detector_postprocess(
-    results: Instances, output_height: int, output_width: int, mask_threshold: float = 0.5
-):
+def detector_postprocess(results, output_height, output_width, mask_threshold=0.5):
     """
     Resize the output instances.
     The input images are often resized when entering an object detector.
@@ -27,31 +25,13 @@ def detector_postprocess(
     Returns:
         Instances: the resized output from the model, based on the output resolution
     """
-    # Change to 'if is_tracing' after PT1.7
-    if isinstance(output_height, torch.Tensor):
-        # Converts integer tensors to float temporaries to ensure true
-        # division is performed when computing scale_x and scale_y.
-        output_width_tmp = output_width.float()
-        output_height_tmp = output_height.float()
-        new_size = torch.stack([output_height, output_width])
-    else:
-        new_size = (output_height, output_width)
-        output_width_tmp = output_width
-        output_height_tmp = output_height
-
-    scale_x, scale_y = (
-        output_width_tmp / results.image_size[1],
-        output_height_tmp / results.image_size[0],
-    )
-    results = Instances(new_size, **results.get_fields())
+    scale_x, scale_y = (output_width / results.image_size[1], output_height / results.image_size[0])
+    results = Instances((output_height, output_width), **results.get_fields())
 
     if results.has("pred_boxes"):
         output_boxes = results.pred_boxes
     elif results.has("proposal_boxes"):
         output_boxes = results.proposal_boxes
-    else:
-        output_boxes = None
-    assert output_boxes is not None, "Predictions must contain boxes!"
 
     output_boxes.scale(scale_x, scale_y)
     output_boxes.clip(results.image_size)
@@ -59,14 +39,12 @@ def detector_postprocess(
     results = results[output_boxes.nonempty()]
 
     if results.has("pred_masks"):
-        if isinstance(results.pred_masks, ROIMasks):
-            roi_masks = results.pred_masks
-        else:
-            # pred_masks is a tensor of shape (N, 1, M, M)
-            roi_masks = ROIMasks(results.pred_masks[:, 0, :, :])
-        results.pred_masks = roi_masks.to_bitmasks(
-            results.pred_boxes, output_height, output_width, mask_threshold
-        ).tensor  # TODO return ROIMasks/BitMask object in the future
+        results.pred_masks = retry_if_cuda_oom(paste_masks_in_image)(
+            results.pred_masks[:, 0, :, :],  # N, 1, M, M
+            results.pred_boxes,
+            results.image_size,
+            threshold=mask_threshold,
+        )
 
     if results.has("pred_keypoints"):
         results.pred_keypoints[:, :, 0] *= scale_x

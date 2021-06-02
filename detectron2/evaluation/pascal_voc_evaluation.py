@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
 import logging
 import numpy as np
@@ -9,23 +9,22 @@ import xml.etree.ElementTree as ET
 from collections import OrderedDict, defaultdict
 from functools import lru_cache
 import torch
+from fvcore.common.file_io import PathManager
 
 from detectron2.data import MetadataCatalog
 from detectron2.utils import comm
-from detectron2.utils.file_io import PathManager
 
 from .evaluator import DatasetEvaluator
 
 
 class PascalVOCDetectionEvaluator(DatasetEvaluator):
     """
-    Evaluate Pascal VOC style AP for Pascal VOC dataset.
+    Evaluate Pascal VOC AP.
     It contains a synchronization, therefore has to be called from all ranks.
 
-    Note that the concept of AP can be implemented in different ways and may not
-    produce identical results. This class mimics the implementation of the official
-    Pascal VOC Matlab API, and should produce similar but not identical results to the
-    official API.
+    Note that this is a rewrite of the official Matlab API.
+    The results should be similar, but not identical to the one produced by
+    the official API.
     """
 
     def __init__(self, dataset_name):
@@ -35,12 +34,7 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
         """
         self._dataset_name = dataset_name
         meta = MetadataCatalog.get(dataset_name)
-
-        # Too many tiny files, download all to local for speed.
-        annotation_dir_local = PathManager.get_local_path(
-            os.path.join(meta.dirname, "Annotations/")
-        )
-        self._anno_file_template = os.path.join(annotation_dir_local, "{}.xml")
+        self._anno_file_template = os.path.join(meta.dirname, "Annotations", "{}.xml")
         self._image_set_path = os.path.join(meta.dirname, "ImageSets", "Main", meta.split + ".txt")
         self._class_names = meta.thing_classes
         assert meta.year in [2007, 2012], meta.year

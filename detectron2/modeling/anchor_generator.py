@@ -1,5 +1,4 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-import collections
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import math
 from typing import List
 import torch
@@ -23,11 +22,16 @@ class BufferList(nn.Module):
     Similar to nn.ParameterList, but for buffers
     """
 
-    def __init__(self, buffers):
-        super().__init__()
+    def __init__(self, buffers=None):
+        super(BufferList, self).__init__()
+        if buffers is not None:
+            self.extend(buffers)
+
+    def extend(self, buffers):
+        offset = len(self)
         for i, buffer in enumerate(buffers):
-            # Use non-persistent buffer so the values are not saved in checkpoint
-            self.register_buffer(str(i), buffer, persistent=False)
+            self.register_buffer(str(offset + i), buffer)
+        return self
 
     def __len__(self):
         return len(self._buffers)
@@ -64,10 +68,10 @@ def _broadcast_params(params, num_features, name):
         list[list[float]]: param for each feature
     """
     assert isinstance(
-        params, collections.abc.Sequence
+        params, (list, tuple)
     ), f"{name} in anchor generator has to be a list! Got {params}."
     assert len(params), f"{name} in anchor generator cannot be empty!"
-    if not isinstance(params[0], collections.abc.Sequence):  # params is list[float]
+    if not isinstance(params[0], (list, tuple)):  # list[float]
         return [params] * num_features
     if len(params) == 1:
         return list(params) * num_features
@@ -85,7 +89,7 @@ class DefaultAnchorGenerator(nn.Module):
     "Faster R-CNN: Towards Real-Time Object Detection with Region Proposal Networks".
     """
 
-    box_dim: torch.jit.Final[int] = 4
+    box_dim: int = 4
     """
     the dimension of each anchor box.
     """
@@ -97,9 +101,9 @@ class DefaultAnchorGenerator(nn.Module):
 
         Args:
             sizes (list[list[float]] or list[float]):
-                If ``sizes`` is list[list[float]], ``sizes[i]`` is the list of anchor sizes
+                If sizes is list[list[float]], sizes[i] is the list of anchor sizes
                 (i.e. sqrt of anchor area) to use for the i-th feature map.
-                If ``sizes`` is list[float], ``sizes`` is used for all feature maps.
+                If sizes is list[float], the sizes are used for all feature maps.
                 Anchor sizes are given in absolute lengths in units of
                 the input image; they do not dynamically scale if the input image size changes.
             aspect_ratios (list[list[float]] or list[float]): list of aspect ratios
@@ -136,7 +140,6 @@ class DefaultAnchorGenerator(nn.Module):
         return BufferList(cell_anchors)
 
     @property
-    @torch.jit.unused
     def num_cell_anchors(self):
         """
         Alias of `num_anchors`.
@@ -144,7 +147,6 @@ class DefaultAnchorGenerator(nn.Module):
         return self.num_anchors
 
     @property
-    @torch.jit.unused
     def num_anchors(self):
         """
         Returns:
@@ -164,9 +166,7 @@ class DefaultAnchorGenerator(nn.Module):
             list[Tensor]: #featuremap tensors, each is (#locations x #cell_anchors) x 4
         """
         anchors = []
-        # buffers() not supported by torchscript. use named_buffers() instead
-        buffers: List[torch.Tensor] = [x[1] for x in self.cell_anchors.named_buffers()]
-        for size, stride, base_anchors in zip(grid_sizes, self.strides, buffers):
+        for size, stride, base_anchors in zip(grid_sizes, self.strides, self.cell_anchors):
             shift_x, shift_y = _create_grid_offsets(size, stride, self.offset, base_anchors.device)
             shifts = torch.stack((shift_x, shift_y, shift_x, shift_y), dim=1)
 
@@ -211,7 +211,7 @@ class DefaultAnchorGenerator(nn.Module):
                 anchors.append([x0, y0, x1, y1])
         return torch.tensor(anchors)
 
-    def forward(self, features: List[torch.Tensor]):
+    def forward(self, features):
         """
         Args:
             features (list[Tensor]): list of backbone feature maps on which to generate anchors.

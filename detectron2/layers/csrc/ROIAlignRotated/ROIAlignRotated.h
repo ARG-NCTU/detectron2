@@ -1,4 +1,4 @@
-// Copyright (c) Facebook, Inc. and its affiliates.
+// Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 #pragma once
 #include <torch/types.h>
 
@@ -24,7 +24,7 @@ at::Tensor ROIAlignRotated_backward_cpu(
     const int width,
     const int sampling_ratio);
 
-#if defined(WITH_CUDA) || defined(WITH_HIP)
+#ifdef WITH_CUDA
 at::Tensor ROIAlignRotated_forward_cuda(
     const at::Tensor& input,
     const at::Tensor& rois,
@@ -54,8 +54,8 @@ inline at::Tensor ROIAlignRotated_forward(
     const int pooled_height,
     const int pooled_width,
     const int sampling_ratio) {
-  if (input.is_cuda()) {
-#if defined(WITH_CUDA) || defined(WITH_HIP)
+  if (input.type().is_cuda()) {
+#ifdef WITH_CUDA
     return ROIAlignRotated_forward_cuda(
         input,
         rois,
@@ -82,8 +82,8 @@ inline at::Tensor ROIAlignRotated_backward(
     const int height,
     const int width,
     const int sampling_ratio) {
-  if (grad.is_cuda()) {
-#if defined(WITH_CUDA) || defined(WITH_HIP)
+  if (grad.type().is_cuda()) {
+#ifdef WITH_CUDA
     return ROIAlignRotated_backward_cuda(
         grad,
         rois,

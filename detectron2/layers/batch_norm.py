@@ -1,14 +1,16 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import logging
 import torch
 import torch.distributed as dist
-from fvcore.nn.distributed import differentiable_all_reduce
 from torch import nn
+from torch.autograd.function import Function
 from torch.nn import functional as F
 
-from detectron2.utils import comm, env
+from detectron2.utils import comm
 
 from .wrappers import BatchNorm2d
+
+TORCH_VERSION = tuple(int(x) for x in torch.__version__.split(".")[:2])
 
 
 class FrozenBatchNorm2d(nn.Module):
@@ -50,8 +52,7 @@ class FrozenBatchNorm2d(nn.Module):
             bias = self.bias - self.running_mean * scale
             scale = scale.reshape(1, -1, 1, 1)
             bias = bias.reshape(1, -1, 1, 1)
-            out_dtype = x.dtype  # may be half
-            return x * scale.to(out_dtype) + bias.to(out_dtype)
+            return x * scale + bias
         else:
             # When gradients are not needed, F.batch_norm is a single fused op
             # and provide more optimization opportunities.
@@ -78,9 +79,6 @@ class FrozenBatchNorm2d(nn.Module):
             if prefix + "running_var" not in state_dict:
                 state_dict[prefix + "running_var"] = torch.ones_like(self.running_var)
 
-        # NOTE: if a checkpoint is trained with BatchNorm and loaded (together with
-        # version number) to FrozenBatchNorm, running_var will be wrong. One solution
-        # is to remove the version number from the checkpoint.
         if version is not None and version < 3:
             logger = logging.getLogger(__name__)
             logger.info("FrozenBatchNorm {} is upgraded to version 3.".format(prefix.rstrip(".")))
@@ -97,7 +95,7 @@ class FrozenBatchNorm2d(nn.Module):
     @classmethod
     def convert_frozen_batchnorm(cls, module):
         """
-        Convert all BatchNorm/SyncBatchNorm in module into FrozenBatchNorm.
+        Convert BatchNorm/SyncBatchNorm in module into FrozenBatchNorm.
 
         Args:
             module (torch.nn.Module):
@@ -138,15 +136,13 @@ def get_norm(norm, out_channels):
     Returns:
         nn.Module or None: the normalization layer
     """
-    if norm is None:
-        return None
     if isinstance(norm, str):
         if len(norm) == 0:
             return None
         norm = {
             "BN": BatchNorm2d,
             # Fixed in https://github.com/pytorch/pytorch/pull/36382
-            "SyncBN": NaiveSyncBatchNorm if env.TORCH_VERSION <= (1, 5) else nn.SyncBatchNorm,
+            "SyncBN": NaiveSyncBatchNorm if TORCH_VERSION <= (1, 5) else nn.SyncBatchNorm,
             "FrozenBN": FrozenBatchNorm2d,
             "GN": lambda channels: nn.GroupNorm(32, channels),
             # for debugging:
@@ -156,9 +152,24 @@ def get_norm(norm, out_channels):
     return norm(out_channels)
 
 
+class AllReduce(Function):
+    @staticmethod
+    def forward(ctx, input):
+        input_list = [torch.zeros_like(input) for k in range(dist.get_world_size())]
+        # Use allgather instead of allreduce since I don't trust in-place operations ..
+        dist.all_gather(input_list, input, async_op=False)
+        inputs = torch.stack(input_list, dim=0)
+        return torch.sum(inputs, dim=0)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        dist.all_reduce(grad_output, async_op=False)
+        return grad_output
+
+
 class NaiveSyncBatchNorm(BatchNorm2d):
     """
-    In PyTorch<=1.5, ``nn.SyncBatchNorm`` has incorrect gradient
+    In PyTorch<=1.5, `nn.SyncBatchNorm` has incorrect gradient
     when the batch size on each worker is different.
     (e.g., when scale augmentation is used, or when it is applied to mask head).
 
@@ -195,17 +206,13 @@ class NaiveSyncBatchNorm(BatchNorm2d):
 
         B, C = input.shape[0], input.shape[1]
 
-        half_input = input.dtype == torch.float16
-        if half_input:
-            # fp16 does not have good enough numerics for the reduction here
-            input = input.float()
         mean = torch.mean(input, dim=[0, 2, 3])
         meansqr = torch.mean(input * input, dim=[0, 2, 3])
 
         if self._stats_mode == "":
             assert B > 0, 'SyncBatchNorm(stats_mode="") does not support zero batch size.'
             vec = torch.cat([mean, meansqr], dim=0)
-            vec = differentiable_all_reduce(vec) * (1.0 / dist.get_world_size())
+            vec = AllReduce.apply(vec) * (1.0 / dist.get_world_size())
             mean, meansqr = torch.split(vec, C)
             momentum = self.momentum
         else:
@@ -216,11 +223,12 @@ class NaiveSyncBatchNorm(BatchNorm2d):
                 vec = torch.cat(
                     [mean, meansqr, torch.ones([1], device=mean.device, dtype=mean.dtype)], dim=0
                 )
-            vec = differentiable_all_reduce(vec * B)
+            vec = AllReduce.apply(vec * B)
 
             total_batch = vec[-1].detach()
             momentum = total_batch.clamp(max=1) * self.momentum  # no update if total_batch is 0
-            mean, meansqr, _ = torch.split(vec / total_batch.clamp(min=1), C)  # avoid div-by-zero
+            total_batch = torch.max(total_batch, torch.ones_like(total_batch))  # avoid div-by-zero
+            mean, meansqr, _ = torch.split(vec / total_batch, C)
 
         var = meansqr - mean * mean
         invstd = torch.rsqrt(var + self.eps)
@@ -231,7 +239,4 @@ class NaiveSyncBatchNorm(BatchNorm2d):
 
         self.running_mean += momentum * (mean.detach() - self.running_mean)
         self.running_var += momentum * (var.detach() - self.running_var)
-        ret = input * scale + bias
-        if half_input:
-            ret = ret.half()
-        return ret
+        return input * scale + bias

@@ -1,24 +1,12 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
-from typing import List
 import torch
 from torchvision.ops import boxes as box_ops
 from torchvision.ops import nms  # BC-compat
 
-from detectron2.utils.env import TORCH_VERSION
 
-if TORCH_VERSION < (1, 7):
-    from detectron2 import _C
-
-    nms_rotated_func = _C.nms_rotated
-else:
-    nms_rotated_func = torch.ops.detectron2.nms_rotated
-
-
-def batched_nms(
-    boxes: torch.Tensor, scores: torch.Tensor, idxs: torch.Tensor, iou_threshold: float
-):
+def batched_nms(boxes, scores, idxs, iou_threshold):
     """
     Same as torchvision.ops.boxes.batched_nms, but safer.
     """
@@ -26,11 +14,10 @@ def batched_nms(
     # TODO may need better strategy.
     # Investigate after having a fully-cuda NMS op.
     if len(boxes) < 40000:
-        # fp16 does not have enough range for batched NMS
-        return box_ops.batched_nms(boxes.float(), scores, idxs, iou_threshold)
+        return box_ops.batched_nms(boxes, scores, idxs, iou_threshold)
 
     result_mask = scores.new_zeros(scores.size(), dtype=torch.bool)
-    for id in torch.jit.annotate(List[int], torch.unique(idxs).cpu().tolist()):
+    for id in torch.unique(idxs).cpu().tolist():
         mask = (idxs == id).nonzero().view(-1)
         keep = nms(boxes[mask], scores[mask], iou_threshold)
         result_mask[mask[keep]] = True
@@ -102,7 +89,9 @@ def nms_rotated(boxes, scores, iou_threshold):
         keep (Tensor): int64 tensor with the indices of the elements that have been kept
         by Rotated NMS, sorted in decreasing order of scores
     """
-    return nms_rotated_func(boxes, scores, iou_threshold)
+    from detectron2 import _C
+
+    return _C.nms_rotated(boxes, scores, iou_threshold)
 
 
 # Note: this function (batched_nms_rotated) might be moved into
@@ -135,7 +124,6 @@ def batched_nms_rotated(boxes, scores, idxs, iou_threshold):
 
     if boxes.numel() == 0:
         return torch.empty((0,), dtype=torch.int64, device=boxes.device)
-    boxes = boxes.float()  # fp16 does not have enough range for batched NMS
     # Strategy: in order to perform NMS independently per class,
     # we add an offset to all the boxes. The offset is dependent
     # only on the class idx, and is large enough so that boxes
