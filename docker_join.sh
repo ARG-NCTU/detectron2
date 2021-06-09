@@ -5,7 +5,7 @@
 
 BASH_OPTION=bash
 
-IMG=argnctu/subt:detectron2-ros
+IMG=argnctu/dualarm:detectron2
 
 xhost +
 containerid=$(docker ps -aqf "ancestor=${IMG}") && echo $containerid
