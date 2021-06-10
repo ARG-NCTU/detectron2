@@ -64,7 +64,7 @@ devel/
 catkin_ws/include/
 catkin_ws/lib/
 catkin_ws/share/
-
+catin_ws/src/rcnn_pkg/weights/*
 
 
 

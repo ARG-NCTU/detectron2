@@ -47,11 +47,11 @@ class rcnn_detection(object):
 		self.predict_mask_pub = rospy.Publisher("/prediction_mask", Image, queue_size = 1)
 
 		register_coco_instances('brandname_train', {}, 
-								'/home/arg/detectron2/datasets/brandname_cocoformat/train/annotations.json', 
-							'/home/arg/detectron2/datasets/brandname_cocoformat/train')
+								'/home/arg/detectron2/datasets/brandname_cocoformat/content/output_train/annotations.json', 
+							'/home/arg/detectron2/datasets/brandname_cocoformat/content/output_train')
 		register_coco_instances('brandname_val', {}, 
-								'/home/arg/detectron2/datasets/brandname_cocoformat/val/annotations.json', 
-							'/home/arg/detectron2/datasets/brandname_cocoformat/val')
+								'/home/arg/detectron2/datasets/brandname_cocoformat/content/output_val/annotations.json', 
+							'/home/arg/detectron2/datasets/brandname_cocoformat/content/output_val')
 		self.subt_metadata = MetadataCatalog.get("brandname_train")
 		self.dataset_dicts = DatasetCatalog.get("brandname_train")
 
@@ -63,7 +63,7 @@ class rcnn_detection(object):
 		self.cfg.MODEL.ROI_HEADS.NUM_CLASSES = 22  # datasets classes
 		self.cfg.DATALOADER.NUM_WORKERS = 0 #Single thread
 		# self.cfg.MODEL.WEIGHTS = os.path.join(self.path, "weights", "model_delta_0011279.pth")
-		self.cfg.MODEL.WEIGHTS = os.path.join(self.path, "weights", "model_0003999.pth")
+		self.cfg.MODEL.WEIGHTS = os.path.join(self.path, "weights", "brandname_model.pth")
 		self.cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.7   # set the testing threshold for this model
 
 		self.predictor = DefaultPredictor(self.cfg)

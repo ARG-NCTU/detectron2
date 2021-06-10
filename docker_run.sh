@@ -24,7 +24,7 @@ docker run --gpus all -it \
     -e QT_X11_NO_MITSHM=1 \
     -e XAUTHORITY=$XAUTH \
     -v "$XAUTH:$XAUTH" \
-    -v "/home/$USER/andyLee/detectron2:/home/arg/detectron2" \
+    -v "/home/$USER/detectron2:/home/arg/detectron2" \
     -v "/tmp/.X11-unix:/tmp/.X11-unix" \
     -v "/etc/localtime:/etc/localtime:ro" \
     -v "/dev:/dev" \
