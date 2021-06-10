@@ -55,3 +55,38 @@ If you use Detectron2 in your research or wish to refer to the baseline results 
   year =         {2019}
 }
 ```
+
+## Predict in ros
+
+Docker image: **argnctu/dualarm:detectron2**
+torch = 1.8 , torch_vision = 0.9
+
+## How to run
+- Go to docker, it might takes about 10 minutes for pulling the docker image
+
+  ```Shell
+  $ source docker_run.sh
+  ```
+- Environment setup
+  ```
+  $ source catkin_make.sh
+  $ source environment.sh  
+  ```
+  
+- Download model and coco_dataset
+  ```
+  $ cd catkin_ws/src/rcnn_pkg/weights
+  $ python3 download_model.py
+  ```
+  ```
+  $ cd datasets
+  $ python3 download_brandname_coco.py   
+  ```
+  
+- Test for prediction 
+  ```
+  # launch  
+  $ roslaunch rcnn_pkg rcnn_brandname.launch
+  ```
+
+
