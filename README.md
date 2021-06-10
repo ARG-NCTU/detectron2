@@ -56,12 +56,6 @@ If you use Detectron2 in your research or wish to refer to the baseline results 
 }
 ```
 
-
-## Predict in ros
-
-Docker image: **argnctu/dualarm:detectron2**
-torch = 1.8 , torch_vision = 0.9
-
 ## How to run
 
 - Download model and coco_dataset
