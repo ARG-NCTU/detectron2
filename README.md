@@ -56,12 +56,24 @@ If you use Detectron2 in your research or wish to refer to the baseline results 
 }
 ```
 
+
 ## Predict in ros
 
 Docker image: **argnctu/dualarm:detectron2**
 torch = 1.8 , torch_vision = 0.9
 
 ## How to run
+
+- Download model and coco_dataset
+  ```
+  $ pip3 install gdown
+  $ cd ~/detectron2/catkin_ws/src/rcnn_pkg/weights
+  $ python3 download_model.py
+  ```
+  ```
+  $ cd ~/detectron2/datasets
+  $ python3 download_brandname_coco.py   
+  ```
 - Go to docker, it might takes about 10 minutes for pulling the docker image
 
   ```Shell
@@ -72,21 +84,18 @@ torch = 1.8 , torch_vision = 0.9
   $ source catkin_make.sh
   $ source environment.sh  
   ```
-  
-- Download model and coco_dataset
-  ```
-  $ cd catkin_ws/src/rcnn_pkg/weights
-  $ python3 download_model.py
-  ```
-  ```
-  $ cd datasets
-  $ python3 download_brandname_coco.py   
-  ```
+ 
   
 - Test for prediction 
   ```
-  # launch  
   $ roslaunch rcnn_pkg rcnn_brandname.launch
   ```
+  - Once you see ```detect 1 frame !!!```, you are able to predcit image!
+  
+  ![](https://i.imgur.com/OPjJK10.gif)
+
+- Result on brandname items:
+
+![](https://i.imgur.com/tXRJLKK.png)
 
 
