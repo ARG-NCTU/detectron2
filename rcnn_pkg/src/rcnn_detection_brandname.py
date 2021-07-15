@@ -19,8 +19,10 @@ import torch.backends.cudnn as cudnn
 from torch.autograd import Variable
 import os 
 import message_filters
+import sys
 
-import detectron2
+sys.path.append("/home/dualarm/mm-dual-arm-regrasp/catkin_ws/src/algorithm/detectron2")
+
 from detectron2.utils.logger import setup_logger
 
 # import some common detectron2 utilities
@@ -47,11 +49,11 @@ class rcnn_detection(object):
 		self.predict_mask_pub = rospy.Publisher("/prediction_mask", Image, queue_size = 1)
 
 		register_coco_instances('brandname_train', {}, 
-								'/home/arg/detectron2/datasets/brandname_cocoformat/content/output_train/annotations.json', 
-							'/home/arg/detectron2/datasets/brandname_cocoformat/content/output_train')
+								'/home/dualarm/mm-dual-arm-regrasp/catkin_ws/src/algorithm/detectron2/datasets/brandname_cocoformat/content/output_train/annotations.json', 
+							'/home/dualarm/mm-dual-arm-regrasp/catkin_ws/src/algorithm/detectron2/datasets/brandname_cocoformat/content/output_train')
 		register_coco_instances('brandname_val', {}, 
-								'/home/arg/detectron2/datasets/brandname_cocoformat/content/output_val/annotations.json', 
-							'/home/arg/detectron2/datasets/brandname_cocoformat/content/output_val')
+								'/home/dualarm/mm-dual-arm-regrasp/catkin_ws/src/algorithm/detectron2/datasets/brandname_cocoformat/content/output_val/annotations.json', 
+							'/home/dualarm/mm-dual-arm-regrasp/catkin_ws/src/algorithm/detectron2/datasets/brandname_cocoformat/content/output_val')
 		self.subt_metadata = MetadataCatalog.get("brandname_train")
 		self.dataset_dicts = DatasetCatalog.get("brandname_train")
 
