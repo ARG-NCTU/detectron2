@@ -55,3 +55,41 @@ If you use Detectron2 in your research or wish to refer to the baseline results 
   year =         {2019}
 }
 ```
+
+## How to run
+
+- Download model and coco_dataset
+  ```
+  $ pip3 install gdown
+  $ cd ~/detectron2/catkin_ws/src/rcnn_pkg/weights
+  $ python3 download_model.py
+  ```
+  ```
+  $ cd ~/detectron2/datasets
+  $ python3 download_brandname_coco.py   
+  ```
+- Go to docker, it might takes about 10 minutes for pulling the docker image
+
+  ```Shell
+  $ source docker_run.sh
+  ```
+- Environment setup
+  ```
+  $ source catkin_make.sh
+  $ source environment.sh  
+  ```
+ 
+  
+- Test for prediction 
+  ```
+  $ roslaunch rcnn_pkg rcnn_brandname.launch
+  ```
+  - Once you see ```detect 1 frame !!!```, you are able to predcit image!
+  
+  ![](https://i.imgur.com/OPjJK10.gif)
+
+- Result on brandname items:
+
+![](https://i.imgur.com/tXRJLKK.png)
+
+

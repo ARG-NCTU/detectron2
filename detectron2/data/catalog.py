@@ -1,18 +1,17 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import copy
 import logging
 import types
-from collections import UserDict
 from typing import List
 
 from detectron2.utils.logger import log_first_n
 
-__all__ = ["DatasetCatalog", "MetadataCatalog", "Metadata"]
+__all__ = ["DatasetCatalog", "MetadataCatalog"]
 
 
-class _DatasetCatalog(UserDict):
+class DatasetCatalog(object):
     """
-    A global dictionary that stores information about the datasets and how to obtain them.
+    A catalog that stores information about the datasets and how to obtain them.
 
     It contains a mapping from strings
     (which are names that identify a dataset, e.g. "coco_2014_train")
@@ -26,18 +25,23 @@ class _DatasetCatalog(UserDict):
     different datasets, by just using the strings in the config.
     """
 
-    def register(self, name, func):
+    _REGISTERED = {}
+
+    @staticmethod
+    def register(name, func):
         """
         Args:
             name (str): the name that identifies a dataset, e.g. "coco_2014_train".
             func (callable): a callable which takes no arguments and returns a list of dicts.
-                It must return the same results if called multiple times.
         """
         assert callable(func), "You must register a function with `DatasetCatalog.register`!"
-        assert name not in self, "Dataset '{}' is already registered!".format(name)
-        self[name] = func
+        assert name not in DatasetCatalog._REGISTERED, "Dataset '{}' is already registered!".format(
+            name
+        )
+        DatasetCatalog._REGISTERED[name] = func
 
-    def get(self, name):
+    @staticmethod
+    def get(name):
         """
         Call the registered function and return its results.
 
@@ -45,47 +49,34 @@ class _DatasetCatalog(UserDict):
             name (str): the name that identifies a dataset, e.g. "coco_2014_train".
 
         Returns:
-            list[dict]: dataset annotations.
+            list[dict]: dataset annotations.0
         """
         try:
-            f = self[name]
-        except KeyError as e:
+            f = DatasetCatalog._REGISTERED[name]
+        except KeyError:
             raise KeyError(
                 "Dataset '{}' is not registered! Available datasets are: {}".format(
-                    name, ", ".join(list(self.keys()))
+                    name, ", ".join(DatasetCatalog._REGISTERED.keys())
                 )
-            ) from e
+            )
         return f()
 
-    def list(self) -> List[str]:
+    @staticmethod
+    def list() -> List[str]:
         """
         List all registered datasets.
 
         Returns:
             list[str]
         """
-        return list(self.keys())
+        return list(DatasetCatalog._REGISTERED.keys())
 
-    def remove(self, name):
+    @staticmethod
+    def clear():
         """
-        Alias of ``pop``.
+        Remove all registered dataset.
         """
-        self.pop(name)
-
-    def __str__(self):
-        return "DatasetCatalog(registered datasets: {})".format(", ".join(self.keys()))
-
-    __repr__ = __str__
-
-
-DatasetCatalog = _DatasetCatalog()
-DatasetCatalog.__doc__ = (
-    _DatasetCatalog.__doc__
-    + """
-    .. automethod:: detectron2.data.catalog.DatasetCatalog.register
-    .. automethod:: detectron2.data.catalog.DatasetCatalog.get
-"""
-)
+        DatasetCatalog._REGISTERED.clear()
 
 
 class Metadata(types.SimpleNamespace):
@@ -94,7 +85,9 @@ class Metadata(types.SimpleNamespace):
     It is intended for storing metadata of a dataset and make it accessible globally.
 
     Examples:
-    ::
+
+    .. code-block:: python
+
         # somewhere when you load the data:
         MetadataCatalog.get("mydataset").thing_classes = ["person", "dog"]
 
@@ -121,17 +114,11 @@ class Metadata(types.SimpleNamespace):
             )
             return getattr(self, self._RENAMED[key])
 
-        # "name" exists in every metadata
-        if len(self.__dict__) > 1:
-            raise AttributeError(
-                "Attribute '{}' does not exist in the metadata of dataset '{}'. Available "
-                "keys are {}.".format(key, self.name, str(self.__dict__.keys()))
+        raise AttributeError(
+            "Attribute '{}' does not exist in the metadata of '{}'. Available keys are {}.".format(
+                key, self.name, str(self.__dict__.keys())
             )
-        else:
-            raise AttributeError(
-                f"Attribute '{key}' does not exist in the metadata of dataset '{self.name}': "
-                "metadata is empty."
-            )
+        )
 
     def __setattr__(self, key, val):
         if key in self._RENAMED:
@@ -178,20 +165,22 @@ class Metadata(types.SimpleNamespace):
             return default
 
 
-class _MetadataCatalog(UserDict):
+class MetadataCatalog:
     """
-    MetadataCatalog is a global dictionary that provides access to
-    :class:`Metadata` of a given dataset.
+    MetadataCatalog provides access to "Metadata" of a given dataset.
 
-    The metadata associated with a certain name is a singleton: once created, the
-    metadata will stay alive and will be returned by future calls to ``get(name)``.
+    The metadata associated with a certain name is a singleton: once created,
+    the metadata will stay alive and will be returned by future calls to `get(name)`.
 
     It's like global variables, so don't abuse it.
     It's meant for storing knowledge that's constant and shared across the execution
     of the program, e.g.: the class names in COCO.
     """
 
-    def get(self, name):
+    _NAME_TO_META = {}
+
+    @staticmethod
+    def get(name):
         """
         Args:
             name (str): name of a dataset (e.g. coco_2014_train).
@@ -201,36 +190,32 @@ class _MetadataCatalog(UserDict):
             or create an empty one if none is available.
         """
         assert len(name)
-        r = super().get(name, None)
-        if r is None:
-            r = self[name] = Metadata(name=name)
-        return r
+        if name in MetadataCatalog._NAME_TO_META:
+            ret = MetadataCatalog._NAME_TO_META[name]
+            # TODO this is for the BC breaking change in D15247032.
+            # Remove this in the future.
+            if hasattr(ret, "dataset_name"):
+                logger = logging.getLogger()
+                logger.warning(
+                    """
+The 'dataset_name' key in metadata is no longer used for
+sharing metadata among splits after D15247032! Add
+metadata to each split (now called dataset) separately!
+                    """
+                )
+                parent_meta = MetadataCatalog.get(ret.dataset_name).as_dict()
+                ret.set(**parent_meta)
+            return ret
+        else:
+            m = MetadataCatalog._NAME_TO_META[name] = Metadata(name=name)
+            return m
 
-    def list(self):
+    @staticmethod
+    def list():
         """
         List all registered metadata.
 
         Returns:
             list[str]: keys (names of datasets) of all registered metadata
         """
-        return list(self.keys())
-
-    def remove(self, name):
-        """
-        Alias of ``pop``.
-        """
-        self.pop(name)
-
-    def __str__(self):
-        return "MetadataCatalog(registered metadata: {})".format(", ".join(self.keys()))
-
-    __repr__ = __str__
-
-
-MetadataCatalog = _MetadataCatalog()
-MetadataCatalog.__doc__ = (
-    _MetadataCatalog.__doc__
-    + """
-    .. automethod:: detectron2.data.catalog.MetadataCatalog.get
-"""
-)
+        return list(MetadataCatalog._NAME_TO_META.keys())

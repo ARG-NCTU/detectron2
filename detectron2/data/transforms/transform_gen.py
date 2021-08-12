@@ -1,28 +1,26 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) Facebook, Inc. and its affiliates.
-"""
-Implement many useful :class:`Augmentation`.
-"""
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+# File: transformer.py
+
+import inspect
 import numpy as np
+import pprint
 import sys
-from typing import Tuple
+from abc import ABCMeta, abstractmethod
 from fvcore.transforms.transform import (
     BlendTransform,
     CropTransform,
     HFlipTransform,
     NoOpTransform,
-    PadTransform,
     Transform,
     TransformList,
     VFlipTransform,
 )
 from PIL import Image
 
-from .augmentation import Augmentation, _transform_to_aug
 from .transform import ExtentTransform, ResizeTransform, RotationTransform
 
 __all__ = [
-    "FixedSizeCrop",
     "RandomApply",
     "RandomBrightness",
     "RandomContrast",
@@ -33,47 +31,124 @@ __all__ = [
     "RandomLighting",
     "RandomRotation",
     "Resize",
-    "ResizeScale",
     "ResizeShortestEdge",
-    "RandomCrop_CategoryAreaConstraint",
+    "TransformGen",
+    "apply_transform_gens",
 ]
 
 
-class RandomApply(Augmentation):
+def check_dtype(img):
+    assert isinstance(img, np.ndarray), "[TransformGen] Needs an numpy array, but got a {}!".format(
+        type(img)
+    )
+    assert not isinstance(img.dtype, np.integer) or (
+        img.dtype == np.uint8
+    ), "[TransformGen] Got image of type {}, use uint8 or floating points instead!".format(
+        img.dtype
+    )
+    assert img.ndim in [2, 3], img.ndim
+
+
+class TransformGen(metaclass=ABCMeta):
     """
-    Randomly apply an augmentation with a given probability.
+    TransformGen takes an image of type uint8 in range [0, 255], or
+    floating point in range [0, 1] or [0, 255] as input.
+
+    It creates a :class:`Transform` based on the given image, sometimes with randomness.
+    The transform can then be used to transform images
+    or other data (boxes, points, annotations, etc.) associated with it.
+
+    The assumption made in this class
+    is that the image itself is sufficient to instantiate a transform.
+    When this assumption is not true, you need to create the transforms by your own.
+
+    A list of `TransformGen` can be applied with :func:`apply_transform_gens`.
     """
 
-    def __init__(self, tfm_or_aug, prob=0.5):
+    def _init(self, params=None):
+        if params:
+            for k, v in params.items():
+                if k != "self" and not k.startswith("_"):
+                    setattr(self, k, v)
+
+    @abstractmethod
+    def get_transform(self, img):
+        pass
+
+    def _rand_range(self, low=1.0, high=None, size=None):
+        """
+        Uniform float random number between low and high.
+        """
+        if high is None:
+            low, high = 0, low
+        if size is None:
+            size = []
+        return np.random.uniform(low, high, size)
+
+    def __repr__(self):
+        """
+        Produce something like:
+        "MyTransformGen(field1={self.field1}, field2={self.field2})"
+        """
+        try:
+            sig = inspect.signature(self.__init__)
+            classname = type(self).__name__
+            argstr = []
+            for name, param in sig.parameters.items():
+                assert (
+                    param.kind != param.VAR_POSITIONAL and param.kind != param.VAR_KEYWORD
+                ), "The default __repr__ doesn't support *args or **kwargs"
+                assert hasattr(self, name), (
+                    "Attribute {} not found! "
+                    "Default __repr__ only works if attributes match the constructor.".format(name)
+                )
+                attr = getattr(self, name)
+                default = param.default
+                if default is attr:
+                    continue
+                argstr.append("{}={}".format(name, pprint.pformat(attr)))
+            return "{}({})".format(classname, ", ".join(argstr))
+        except AssertionError:
+            return super().__repr__()
+
+    __str__ = __repr__
+
+
+class RandomApply(TransformGen):
+    """
+    Randomly apply the wrapper transformation with a given probability.
+    """
+
+    def __init__(self, transform, prob=0.5):
         """
         Args:
-            tfm_or_aug (Transform, Augmentation): the transform or augmentation
-                to be applied. It can either be a `Transform` or `Augmentation`
-                instance.
+            transform (Transform, TransformGen): the transform to be wrapped
+                by the `RandomApply`. The `transform` can either be a
+                `Transform` or `TransformGen` instance.
             prob (float): probability between 0.0 and 1.0 that
                 the wrapper transformation is applied
         """
         super().__init__()
-        self.aug = _transform_to_aug(tfm_or_aug)
+        assert isinstance(transform, (Transform, TransformGen)), (
+            f"The given transform must either be a Transform or TransformGen instance. "
+            f"Not {type(transform)}"
+        )
         assert 0.0 <= prob <= 1.0, f"Probablity must be between 0.0 and 1.0 (given: {prob})"
         self.prob = prob
+        self.transform = transform
 
-    def get_transform(self, *args):
+    def get_transform(self, img):
         do = self._rand_range() < self.prob
         if do:
-            return self.aug.get_transform(*args)
+            if isinstance(self.transform, TransformGen):
+                return self.transform.get_transform(img)
+            else:
+                return self.transform
         else:
             return NoOpTransform()
 
-    def __call__(self, aug_input):
-        do = self._rand_range() < self.prob
-        if do:
-            return self.aug(aug_input)
-        else:
-            return NoOpTransform()
 
-
-class RandomFlip(Augmentation):
+class RandomFlip(TransformGen):
     """
     Flip the image horizontally or vertically with the given probability.
     """
@@ -93,8 +168,8 @@ class RandomFlip(Augmentation):
             raise ValueError("At least one of horiz or vert has to be True!")
         self._init(locals())
 
-    def get_transform(self, image):
-        h, w = image.shape[:2]
+    def get_transform(self, img):
+        h, w = img.shape[:2]
         do = self._rand_range() < self.prob
         if do:
             if self.horizontal:
@@ -105,8 +180,8 @@ class RandomFlip(Augmentation):
             return NoOpTransform()
 
 
-class Resize(Augmentation):
-    """Resize image to a fixed target size"""
+class Resize(TransformGen):
+    """ Resize image to a target size"""
 
     def __init__(self, shape, interp=Image.BILINEAR):
         """
@@ -119,13 +194,13 @@ class Resize(Augmentation):
         shape = tuple(shape)
         self._init(locals())
 
-    def get_transform(self, image):
+    def get_transform(self, img):
         return ResizeTransform(
-            image.shape[0], image.shape[1], self.shape[0], self.shape[1], self.interp
+            img.shape[0], img.shape[1], self.shape[0], self.shape[1], self.interp
         )
 
 
-class ResizeShortestEdge(Augmentation):
+class ResizeShortestEdge(TransformGen):
     """
     Scale the shorter edge to the given size, with a limit of `max_size` on the longer edge.
     If `max_size` is reached, then downscale so that the longer edge does not exceed max_size.
@@ -148,15 +223,11 @@ class ResizeShortestEdge(Augmentation):
         self.is_range = sample_style == "range"
         if isinstance(short_edge_length, int):
             short_edge_length = (short_edge_length, short_edge_length)
-        if self.is_range:
-            assert len(short_edge_length) == 2, (
-                "short_edge_length must be two values using 'range' sample style."
-                f" Got {short_edge_length}!"
-            )
         self._init(locals())
 
-    def get_transform(self, image):
-        h, w = image.shape[:2]
+    def get_transform(self, img):
+        h, w = img.shape[:2]
+
         if self.is_range:
             size = np.random.randint(self.short_edge_length[0], self.short_edge_length[1] + 1)
         else:
@@ -178,50 +249,7 @@ class ResizeShortestEdge(Augmentation):
         return ResizeTransform(h, w, newh, neww, self.interp)
 
 
-class ResizeScale(Augmentation):
-    """
-    Takes target size as input and randomly scales the given target size between `min_scale`
-    and `max_scale`. It then scales the input image such that it fits inside the scaled target
-    box, keeping the aspect ratio constant.
-    This implements the resize part of the Google's 'resize_and_crop' data augmentation:
-    https://github.com/tensorflow/tpu/blob/master/models/official/detection/utils/input_utils.py#L127
-    """
-
-    def __init__(
-        self,
-        min_scale: float,
-        max_scale: float,
-        target_height: int,
-        target_width: int,
-        interp: int = Image.BILINEAR,
-    ):
-        """
-        Args:
-            min_scale: minimum image scale range.
-            max_scale: maximum image scale range.
-            target_height: target image height.
-            target_width: target image width.
-            interp: image interpolation method.
-        """
-        super().__init__()
-        self._init(locals())
-
-    def get_transform(self, image: np.ndarray) -> Transform:
-        # Compute the image scale and scaled size.
-        input_size = image.shape[:2]
-        output_size = (self.target_height, self.target_width)
-        random_scale = np.random.uniform(self.min_scale, self.max_scale)
-        random_scale_size = np.multiply(output_size, random_scale)
-        scale = np.minimum(
-            random_scale_size[0] / input_size[0], random_scale_size[1] / input_size[1]
-        )
-        scaled_size = np.round(np.multiply(input_size, scale)).astype(int)
-        return ResizeTransform(
-            input_size[0], input_size[1], scaled_size[0], scaled_size[1], self.interp
-        )
-
-
-class RandomRotation(Augmentation):
+class RandomRotation(TransformGen):
     """
     This method returns a copy of this image, rotated the given
     number of degrees counter clockwise around the given center.
@@ -251,8 +279,8 @@ class RandomRotation(Augmentation):
             center = (center, center)
         self._init(locals())
 
-    def get_transform(self, image):
-        h, w = image.shape[:2]
+    def get_transform(self, img):
+        h, w = img.shape[:2]
         center = None
         if self.is_range:
             angle = np.random.uniform(self.angle[0], self.angle[1])
@@ -269,82 +297,28 @@ class RandomRotation(Augmentation):
         if center is not None:
             center = (w * center[0], h * center[1])  # Convert to absolute coordinates
 
-        if angle % 360 == 0:
-            return NoOpTransform()
-
         return RotationTransform(h, w, angle, expand=self.expand, center=center, interp=self.interp)
 
 
-class FixedSizeCrop(Augmentation):
+class RandomCrop(TransformGen):
     """
-    If `crop_size` is smaller than the input image size, then it uses a random crop of
-    the crop size. If `crop_size` is larger than the input image size, then it pads
-    the right and the bottom of the image to the crop size.
-    """
-
-    def __init__(self, crop_size: Tuple[int], pad_value: float = 128.0):
-        """
-        Args:
-            crop_size: target image (height, width).
-            pad_value: the padding value.
-        """
-        super().__init__()
-        self._init(locals())
-
-    def get_transform(self, image: np.ndarray) -> TransformList:
-        # Compute the image scale and scaled size.
-        input_size = image.shape[:2]
-        output_size = self.crop_size
-
-        # Add random crop if the image is scaled up.
-        max_offset = np.subtract(input_size, output_size)
-        max_offset = np.maximum(max_offset, 0)
-        offset = np.multiply(max_offset, np.random.uniform(0.0, 1.0))
-        offset = np.round(offset).astype(int)
-        crop_transform = CropTransform(
-            offset[1], offset[0], output_size[1], output_size[0], input_size[1], input_size[0]
-        )
-
-        # Add padding if the image is scaled down.
-        pad_size = np.subtract(output_size, input_size)
-        pad_size = np.maximum(pad_size, 0)
-        original_size = np.minimum(input_size, output_size)
-        pad_transform = PadTransform(
-            0, 0, pad_size[1], pad_size[0], original_size[1], original_size[0], self.pad_value
-        )
-
-        return TransformList([crop_transform, pad_transform])
-
-
-class RandomCrop(Augmentation):
-    """
-    Randomly crop a rectangle region out of an image.
+    Randomly crop a subimage out of an image.
     """
 
     def __init__(self, crop_type: str, crop_size):
         """
         Args:
-            crop_type (str): one of "relative_range", "relative", "absolute", "absolute_range".
-            crop_size (tuple[float, float]): two floats, explained below.
-
-        - "relative": crop a (H * crop_size[0], W * crop_size[1]) region from an input image of
-          size (H, W). crop size should be in (0, 1]
-        - "relative_range": uniformly sample two values from [crop_size[0], 1]
-          and [crop_size[1]], 1], and use them as in "relative" crop type.
-        - "absolute" crop a (crop_size[0], crop_size[1]) region from input image.
-          crop_size must be smaller than the input image size.
-        - "absolute_range", for an input of size (H, W), uniformly sample H_crop in
-          [crop_size[0], min(H, crop_size[1])] and W_crop in [crop_size[0], min(W, crop_size[1])].
-          Then crop a region (H_crop, W_crop).
+            crop_type (str): one of "relative_range", "relative", "absolute".
+                See `config/defaults.py` for explanation.
+            crop_size (tuple[float]): the relative ratio or absolute pixels of
+                height and width
         """
-        # TODO style of relative_range and absolute_range are not consistent:
-        # one takes (h, w) but another takes (min, max)
         super().__init__()
-        assert crop_type in ["relative_range", "relative", "absolute", "absolute_range"]
+        assert crop_type in ["relative_range", "relative", "absolute"]
         self._init(locals())
 
-    def get_transform(self, image):
-        h, w = image.shape[:2]
+    def get_transform(self, img):
+        h, w = img.shape[:2]
         croph, cropw = self.get_crop_size((h, w))
         assert h >= croph and w >= cropw, "Shape computation in {} has bugs.".format(self)
         h0 = np.random.randint(h - croph + 1)
@@ -369,62 +343,11 @@ class RandomCrop(Augmentation):
             return int(h * ch + 0.5), int(w * cw + 0.5)
         elif self.crop_type == "absolute":
             return (min(self.crop_size[0], h), min(self.crop_size[1], w))
-        elif self.crop_type == "absolute_range":
-            assert self.crop_size[0] <= self.crop_size[1]
-            ch = np.random.randint(min(h, self.crop_size[0]), min(h, self.crop_size[1]) + 1)
-            cw = np.random.randint(min(w, self.crop_size[0]), min(w, self.crop_size[1]) + 1)
-            return ch, cw
         else:
             NotImplementedError("Unknown crop type {}".format(self.crop_type))
 
 
-class RandomCrop_CategoryAreaConstraint(Augmentation):
-    """
-    Similar to :class:`RandomCrop`, but find a cropping window such that no single category
-    occupies a ratio of more than `single_category_max_area` in semantic segmentation ground
-    truth, which can cause unstability in training. The function attempts to find such a valid
-    cropping window for at most 10 times.
-    """
-
-    def __init__(
-        self,
-        crop_type: str,
-        crop_size,
-        single_category_max_area: float = 1.0,
-        ignored_category: int = None,
-    ):
-        """
-        Args:
-            crop_type, crop_size: same as in :class:`RandomCrop`
-            single_category_max_area: the maximum allowed area ratio of a
-                category. Set to 1.0 to disable
-            ignored_category: allow this category in the semantic segmentation
-                ground truth to exceed the area ratio. Usually set to the category
-                that's ignored in training.
-        """
-        self.crop_aug = RandomCrop(crop_type, crop_size)
-        self._init(locals())
-
-    def get_transform(self, image, sem_seg):
-        if self.single_category_max_area >= 1.0:
-            return self.crop_aug.get_transform(image)
-        else:
-            h, w = sem_seg.shape
-            for _ in range(10):
-                crop_size = self.crop_aug.get_crop_size((h, w))
-                y0 = np.random.randint(h - crop_size[0] + 1)
-                x0 = np.random.randint(w - crop_size[1] + 1)
-                sem_seg_temp = sem_seg[y0 : y0 + crop_size[0], x0 : x0 + crop_size[1]]
-                labels, cnt = np.unique(sem_seg_temp, return_counts=True)
-                if self.ignored_category is not None:
-                    cnt = cnt[labels != self.ignored_category]
-                if len(cnt) > 1 and np.max(cnt) < np.sum(cnt) * self.single_category_max_area:
-                    break
-            crop_tfm = CropTransform(x0, y0, crop_size[1], crop_size[0])
-            return crop_tfm
-
-
-class RandomExtent(Augmentation):
+class RandomExtent(TransformGen):
     """
     Outputs an image by cropping a random "subrect" of the source image.
 
@@ -446,8 +369,8 @@ class RandomExtent(Augmentation):
         super().__init__()
         self._init(locals())
 
-    def get_transform(self, image):
-        img_h, img_w = image.shape[:2]
+    def get_transform(self, img):
+        img_h, img_w = img.shape[:2]
 
         # Initialize src_rect to fit the input image.
         src_rect = np.array([-0.5 * img_w, -0.5 * img_h, 0.5 * img_w, 0.5 * img_h])
@@ -469,7 +392,7 @@ class RandomExtent(Augmentation):
         )
 
 
-class RandomContrast(Augmentation):
+class RandomContrast(TransformGen):
     """
     Randomly transforms image contrast.
 
@@ -490,12 +413,12 @@ class RandomContrast(Augmentation):
         super().__init__()
         self._init(locals())
 
-    def get_transform(self, image):
+    def get_transform(self, img):
         w = np.random.uniform(self.intensity_min, self.intensity_max)
-        return BlendTransform(src_image=image.mean(), src_weight=1 - w, dst_weight=w)
+        return BlendTransform(src_image=img.mean(), src_weight=1 - w, dst_weight=w)
 
 
-class RandomBrightness(Augmentation):
+class RandomBrightness(TransformGen):
     """
     Randomly transforms image brightness.
 
@@ -516,15 +439,14 @@ class RandomBrightness(Augmentation):
         super().__init__()
         self._init(locals())
 
-    def get_transform(self, image):
+    def get_transform(self, img):
         w = np.random.uniform(self.intensity_min, self.intensity_max)
         return BlendTransform(src_image=0, src_weight=1 - w, dst_weight=w)
 
 
-class RandomSaturation(Augmentation):
+class RandomSaturation(TransformGen):
     """
-    Randomly transforms saturation of an RGB image.
-    Input images are assumed to have 'RGB' channel order.
+    Randomly transforms image saturation.
 
     Saturation intensity is uniformly sampled in (intensity_min, intensity_max).
     - intensity < 1 will reduce saturation (make the image more grayscale)
@@ -543,17 +465,16 @@ class RandomSaturation(Augmentation):
         super().__init__()
         self._init(locals())
 
-    def get_transform(self, image):
-        assert image.shape[-1] == 3, "RandomSaturation only works on RGB images"
+    def get_transform(self, img):
+        assert img.shape[-1] == 3, "Saturation only works on RGB images"
         w = np.random.uniform(self.intensity_min, self.intensity_max)
-        grayscale = image.dot([0.299, 0.587, 0.114])[:, :, np.newaxis]
+        grayscale = img.dot([0.299, 0.587, 0.114])[:, :, np.newaxis]
         return BlendTransform(src_image=grayscale, src_weight=1 - w, dst_weight=w)
 
 
-class RandomLighting(Augmentation):
+class RandomLighting(TransformGen):
     """
-    The "lighting" augmentation described in AlexNet, using fixed PCA over ImageNet.
-    Input images are assumed to have 'RGB' channel order.
+    Randomly transforms image color using fixed PCA over ImageNet.
 
     The degree of color jittering is randomly sampled via a normal distribution,
     with standard deviation given by the scale parameter.
@@ -571,9 +492,43 @@ class RandomLighting(Augmentation):
         )
         self.eigen_vals = np.array([0.2175, 0.0188, 0.0045])
 
-    def get_transform(self, image):
-        assert image.shape[-1] == 3, "RandomLighting only works on RGB images"
+    def get_transform(self, img):
+        assert img.shape[-1] == 3, "Saturation only works on RGB images"
         weights = np.random.normal(scale=self.scale, size=3)
         return BlendTransform(
             src_image=self.eigen_vecs.dot(weights * self.eigen_vals), src_weight=1.0, dst_weight=1.0
         )
+
+
+def apply_transform_gens(transform_gens, img):
+    """
+    Apply a list of :class:`TransformGen` on the input image, and
+    returns the transformed image and a list of transforms.
+
+    We cannot simply create and return all transforms without
+    applying it to the image, because a subsequent transform may
+    need the output of the previous one.
+
+    Args:
+        transform_gens (list): list of :class:`TransformGen` instance to
+            be applied.
+        img (ndarray): uint8 or floating point images with 1 or 3 channels.
+
+    Returns:
+        ndarray: the transformed image
+        TransformList: contain the transforms that's used.
+    """
+    for g in transform_gens:
+        assert isinstance(g, TransformGen), g
+
+    check_dtype(img)
+
+    tfms = []
+    for g in transform_gens:
+        tfm = g.get_transform(img)
+        assert isinstance(
+            tfm, Transform
+        ), "TransformGen {} must return an instance of Transform! Got {} instead".format(g, tfm)
+        img = tfm.apply_image(img)
+        tfms.append(tfm)
+    return img, TransformList(tfms)

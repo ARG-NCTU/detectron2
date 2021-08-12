@@ -1,11 +1,8 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import numpy as np
-from typing import Tuple
 import torch
 from PIL import Image
 from torch.nn import functional as F
-
-from detectron2.structures import Boxes
 
 __all__ = ["paste_masks_in_image"]
 
@@ -16,7 +13,7 @@ BYTES_PER_FLOAT = 4
 GPU_MEM_LIMIT = 1024 ** 3  # 1 GB memory limit
 
 
-def _do_paste_mask(masks, boxes, img_h: int, img_w: int, skip_empty: bool = True):
+def _do_paste_mask(masks, boxes, img_h, img_w, skip_empty=True):
     """
     Args:
         masks: N, 1, H, W
@@ -36,8 +33,7 @@ def _do_paste_mask(masks, boxes, img_h: int, img_w: int, skip_empty: bool = True
     # Compared to pasting them one by one,
     # this has more operations but is faster on COCO-scale dataset.
     device = masks.device
-
-    if skip_empty and not torch.jit.is_scripting():
+    if skip_empty:
         x0_int, y0_int = torch.clamp(boxes.min(dim=0).values.floor()[:2] - 1, min=0).to(
             dtype=torch.int32
         )
@@ -60,20 +56,15 @@ def _do_paste_mask(masks, boxes, img_h: int, img_w: int, skip_empty: bool = True
     gy = img_y[:, :, None].expand(N, img_y.size(1), img_x.size(1))
     grid = torch.stack([gx, gy], dim=3)
 
-    if not torch.jit.is_scripting():
-        if not masks.dtype.is_floating_point:
-            masks = masks.float()
-    img_masks = F.grid_sample(masks, grid.to(masks.dtype), align_corners=False)
+    img_masks = F.grid_sample(masks.to(dtype=torch.float32), grid, align_corners=False)
 
-    if skip_empty and not torch.jit.is_scripting():
+    if skip_empty:
         return img_masks[:, 0], (slice(y0_int, y1_int), slice(x0_int, x1_int))
     else:
         return img_masks[:, 0], ()
 
 
-def paste_masks_in_image(
-    masks: torch.Tensor, boxes: Boxes, image_shape: Tuple[int, int], threshold: float = 0.5
-):
+def paste_masks_in_image(masks, boxes, image_shape, threshold=0.5):
     """
     Paste a set of masks that are of a fixed resolution (e.g., 28 x 28) into an image.
     The location, height, and width for pasting each mask is determined by their
@@ -113,7 +104,7 @@ def paste_masks_in_image(
 
     # The actual implementation split the input into chunks,
     # and paste them chunk by chunk.
-    if device.type == "cpu" or torch.jit.is_scripting():
+    if device.type == "cpu":
         # CPU is most efficient when they are pasted one by one with skip_empty=True
         # so that it performs minimal number of operations.
         num_chunks = N
@@ -140,10 +131,7 @@ def paste_masks_in_image(
             # for visualization and debugging
             masks_chunk = (masks_chunk * 255).to(dtype=torch.uint8)
 
-        if torch.jit.is_scripting():  # Scripting does not use the optimized codepath
-            img_masks[inds] = masks_chunk
-        else:
-            img_masks[(inds,) + spatial_inds] = masks_chunk
+        img_masks[(inds,) + spatial_inds] = masks_chunk
     return img_masks
 
 
